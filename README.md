@@ -12,23 +12,23 @@ stroke.
 
 
 # Classifiers
-Linear Regression
-Decision Tree
-K.Mean Clustering
+- Linear Regression
+- Decision Tree
+- K.Mean Clustering
 
 # Python Libs
-NumPy
-Pandas
-Torch
-Matplotlib
-Seaborn
-Scikit-learn (library for creating the predictive models)
+- NumPy 
+- Pandas
+- Torch
+- Matplotlib
+- Seaborn
+- Scikit-learn (library for creating the predictive models)
 
 # Prerequisite
-Python >= v3.8
-Apache Spart
-Google Colab
-Some knowledge of Machine Learning
+- Python >= v3.8
+- Apache Spart
+- Google Colab
+- Some knowledge of Machine Learning
 
 # Dataset
 Download link: https://www.kaggle.com/datasets/fedesoriano/stroke-prediction-dataset 
