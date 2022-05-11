@@ -1,0 +1,215 @@
+# Apache Spark 
+
+from google.colab import drive
+drive.mount('/content/gdrive')
+
+!apt-get install openjdk-8-jdk-headless -qq > /dev/null
+!wget -q https://www-us.apache.org/dist/spark/spark-2.4.4/spark-2.4.4-bin-hadoop2.7.tgz
+!tar xf spark-2.4.4-bin-hadoop2.7.tgz
+!pip install -q findspark
+import os
+os.environ["JAVA_HOME"] = "/usr/lib/jvm/java-8-openjdk-amd64"
+os.environ["SPARK_HOME"] = "/content/spark-2.4.4-bin-hadoop2.7"
+import findspark
+findspark.init()
+
+import numpy as np 
+import pandas as pd
+import os
+from pyspark.sql import SparkSession
+import pyspark.sql as sparksql
+from pyspark import SparkContext, SparkConf
+
+directory = '/content/gdrive/My Drive/Colab Notebooks'
+
+spark = SparkSession.builder.appName('stroke').getOrCreate()
+train = spark.read.csv(directory + '/train_2v.csv', inferSchema=True,header=True)
+test = spark.read.csv(directory + '/test_2v.csv', inferSchema=True,header=True)
+
+
+# data summary
+train.printSchema()
+# train.dtypes
+
+# train.toPandas().head(5)
+# train.groupBy('stroke').count().show()
+
+# create DataFrame as a temporary view for SQL queries
+train.createOrReplaceTempView('table')
+test.createOrReplaceTempView('table_test')
+
+# sql queries for data statistics
+# spark.sql("SELECT work_type, " +
+#        "COUNT(work_type) as work_type, " +
+#        "COUNT(work_type) * 100.0 / (select count(*) FROM table) as work_type_percent " +
+#        "FROM table " +
+#        "group by work_type").show()
+
+# spark.sql("SELECT work_type, " +
+#        "COUNT(work_type) as work_type, " +
+#        "COUNT(work_type) * 100.0 / (select count(*) FROM table) as work_type_percent " +
+#        "FROM table WHERE stroke == 1 " +
+#        "group by work_type").show()
+
+# spark.sql("SELECT gender, COUNT(gender) as gender_count, COUNT(gender)*100/(SELECT COUNT(gender) FROM table WHERE gender == 'Male') as percentage FROM table WHERE stroke== 1 AND gender = 'Male' GROUP BY gender").show()
+# spark.sql("SELECT gender, COUNT(gender) as gender_count, COUNT(gender)*100/(SELECT COUNT(gender) FROM table WHERE gender == 'Female') as percentage FROM table WHERE stroke== 1 AND gender = 'Female' GROUP BY gender").show()
+
+# spark.sql("SELECT COUNT(age)*100/(SELECT COUNT(age) FROM table WHERE stroke ==1) as percentage_over_45 FROM table WHERE stroke == 1 AND age>=45").show()
+
+train = train.drop('id')
+test = test.drop('id')
+
+from pyspark.ml import Pipeline
+from pyspark.ml.classification import DecisionTreeClassifier
+from pyspark.ml.feature import StringIndexer, VectorIndexer
+from pyspark.ml.evaluation import MulticlassClassificationEvaluator
+
+# view field count with null values
+spark.sql("SELECT COUNT(*) as smoking_null FROM table WHERE smoking_status is null").show()
+spark.sql("SELECT COUNT(*) as bmi_null FROM table WHERE bmi is null").show()
+spark.sql("SELECT COUNT(*) as gender_null FROM table WHERE gender is null").show()
+spark.sql("SELECT COUNT(*) as age_null FROM table WHERE age is null").show()
+spark.sql("SELECT COUNT(*) as hypertension_null FROM table WHERE hypertension is null").show()
+spark.sql("SELECT COUNT(*) as heart_disease_null FROM table WHERE heart_disease is null").show()
+spark.sql("SELECT COUNT(*) as ever_married_null FROM table WHERE ever_married is null").show()
+spark.sql("SELECT COUNT(*) as work_type_null FROM table WHERE work_type is null").show()
+spark.sql("SELECT COUNT(*) as Residence_type_null FROM table WHERE Residence_type is null").show()
+spark.sql("SELECT COUNT(*) as avg_glucose_null FROM table WHERE avg_glucose_level is null").show()
+
+
+# fill in missing values for smoking status
+# As this is categorical data, we will add one data type "No Info" for the missing one
+train_f = train.na.fill('No Info', subset=['smoking_status'])
+test_f = test.na.fill('No Info', subset=['smoking_status'])
+
+# fill in miss values for bmi 
+# as this is numecial data , we will simple fill the missing values with mean
+from pyspark.sql.functions import mean
+mean = train_f.select(mean(train_f['bmi'])).collect()
+mean_bmi = mean[0][0]
+train_f = train_f.na.fill(mean_bmi,['bmi'])
+test_f = test_f.na.fill(mean_bmi,['bmi'])
+
+# indexing all categorical columns in the dataset
+from pyspark.ml.feature import StringIndexer
+indexer1 = StringIndexer(inputCol="gender", outputCol="genderIndex")
+indexer2 = StringIndexer(inputCol="ever_married", outputCol="ever_marriedIndex")
+indexer3 = StringIndexer(inputCol="work_type", outputCol="work_typeIndex")
+indexer4 = StringIndexer(inputCol="Residence_type", outputCol="Residence_typeIndex")
+indexer5 = StringIndexer(inputCol="smoking_status", outputCol="smoking_statusIndex")
+
+# Doing one hot encoding of indexed data
+from pyspark.ml.feature import OneHotEncoderEstimator
+encoder = OneHotEncoderEstimator(inputCols=["genderIndex","ever_marriedIndex","work_typeIndex","Residence_typeIndex","smoking_statusIndex"],
+                                 outputCols=["genderVec","ever_marriedVec","work_typeVec","Residence_typeVec","smoking_statusVec"])
+
+from pyspark.ml.feature import VectorAssembler
+assembler = VectorAssembler(inputCols=['genderVec',
+ 'age',
+ 'hypertension',
+ 'heart_disease',
+ 'ever_marriedVec',
+ 'work_typeVec',
+ 'Residence_typeVec',
+ 'avg_glucose_level',
+ 'bmi',
+ 'smoking_statusVec'],outputCol='features')
+
+from pyspark.ml.classification import DecisionTreeClassifier
+from pyspark.ml.evaluation import BinaryClassificationEvaluator
+dtc = DecisionTreeClassifier(labelCol='stroke',featuresCol='features')
+
+from pyspark.ml import Pipeline
+pipeline = Pipeline(stages=[indexer1, indexer2, indexer3, indexer4, indexer5, encoder, assembler, dtc])
+
+# remove null values
+train = train.dropna()
+#spark.sql("SELECT COUNT(*) as smoking_null FROM table WHERE smoking_status is null").show()
+# splitting training and validation data
+train_data,val_data = train.randomSplit([0.7,0.3])
+
+# training model pipeline with data
+model = pipeline.fit(train_data)
+
+# making prediction on model with validation data
+dtc_predictions = model.transform(val_data)
+
+# Select example rows to display.
+dtc_predictions.select("prediction","probability", "stroke", "features").show(5)
+
+from pyspark.ml.evaluation import MulticlassClassificationEvaluator
+# Select (prediction, true label) and compute test error
+acc_evaluator = MulticlassClassificationEvaluator(labelCol="stroke", predictionCol="prediction", metricName="accuracy")
+dtc_acc = acc_evaluator.evaluate(dtc_predictions)
+print('A Decision Tree algorithm had an accuracy of: {0:2.4f}%'.format(dtc_acc*100))
+
+evaluator = BinaryClassificationEvaluator()
+evaluator.setLabelCol("stroke")
+print("Test Area Under ROC: " + str(evaluator.evaluate(dtc_predictions, {evaluator.metricName: "areaUnderROC"})))
+
+
+# regression
+from pyspark.ml.regression import LinearRegression
+lr = LinearRegression(featuresCol = 'features', labelCol='stroke', maxIter=10, regParam=0.3, elasticNetParam=0.8)
+pipeline = Pipeline(stages=[indexer1, indexer2, indexer3, indexer4, indexer5, encoder, assembler, lr])
+
+lr_model = pipeline.fit(train_data)
+
+lr_predictions = lr_model.transform(val_data)
+lr_predictions.select("prediction","stroke","features").show(5)
+from pyspark.ml.evaluation import RegressionEvaluator
+lr_evaluator = RegressionEvaluator(predictionCol="prediction", \
+                 labelCol="stroke",metricName="r2")
+print("R Squared (R2) on test data = %g" % lr_evaluator.evaluate(lr_predictions))
+
+trainingSummary = lr_model.stages[-1].summary
+print("numIterations: %d" % trainingSummary.totalIterations)
+print("objectiveHistory: %s" % str(trainingSummary.objectiveHistory))
+trainingSummary.residuals.show()
+print("RMSE: %f" % trainingSummary.rootMeanSquaredError)
+print("r2: %f" % trainingSummary.r2)
+
+cluster code
+from sklearn.cluster import KMeans
+import matplotlib.pyplot as plt
+
+df = pd.read_csv(directory + '/test_2v.csv')
+#df = pd.read_csv('test_2v.csv')
+df2 = df.dropna()
+cluster_data = df2[['age','avg_glucose_level']]
+cd_new = cluster_data.head(2000)
+
+kmeans = KMeans(n_clusters=20)
+kmeans.fit(cd_new)
+y_kmeans = kmeans.predict(cd_new)
+
+plt.scatter(cd_new['age'], cd_new['avg_glucose_level'], c=y_kmeans, s=10, cmap='viridis')
+
+centers = kmeans.cluster_centers_
+plt.scatter(centers[:, 0], centers[:, 1], c='black', s=100, alpha=0.5);
+
+bmi_column1 = df['bmi']
+bmi_column2 = df2['bmi']
+new_bmi_1 = bmi_column1.dropna()
+new_bmi_1 = new_bmi_1.head(200) 
+new_bmi_2 = bmi_column2.dropna()
+new_bmi_2 = new_bmi_2.head(200)
+p = np.array(new_bmi_1)
+q = np.array(new_bmi_2)
+p = p.reshape(-1,1)
+q= q.reshape(-1,1)
+print(new_bmi_1, new_bmi_2)
+
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.linear_model import LinearRegression
+model = LinearRegression().fit(p,q)
+r_sq = model.score(p,q)
+(r_sq)
+
+q_pred = model.predict(p)
+z = np.array([1,0]*100)
+colors = np.array(["red", "green"])
+
+plt.scatter(p,q,  color= colors[z])
+plt.plot(p,q_pred, color='black', linewidth=3)
